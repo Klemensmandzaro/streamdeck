@@ -1,0 +1,138 @@
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <BleGamepad.h>
+
+// --- PINY ---
+#define TFT_DC    9
+#define TFT_RST   10
+#define TFT_MOSI  11
+#define TFT_SCLK  12
+
+const int csPins[] = {41, 42};       // CS Ekranów
+const int buttonPins[] = {7, 15};    // Przyciski
+
+const int LICZBA_MODULOW = 2;
+
+// --- OBIEKTY ---
+Adafruit_ST7735* tfts[LICZBA_MODULOW];
+BleGamepad bleGamepad("StreamDeck Hybrid", "Ty", 100);
+
+uint8_t lineBuffer[320]; 
+bool lastState[LICZBA_MODULOW] = {LOW, LOW};
+
+void setup() {
+  Serial.begin(115200);
+
+  // 1. KONFIGURACJA CS
+  for(int i=0; i<LICZBA_MODULOW; i++) {
+    pinMode(csPins[i], OUTPUT);
+    digitalWrite(csPins[i], HIGH); 
+  }
+
+  // 2. RESET
+  pinMode(TFT_RST, OUTPUT);
+  digitalWrite(TFT_RST, HIGH); delay(50);
+  digitalWrite(TFT_RST, LOW);  delay(50);
+  digitalWrite(TFT_RST, HIGH); delay(150);
+
+  // 3. INICJALIZACJA
+  for (int i = 0; i < LICZBA_MODULOW; i++) {
+    tfts[i] = new Adafruit_ST7735(-1, TFT_DC, TFT_MOSI, TFT_SCLK, -1);
+    
+    digitalWrite(csPins[i], LOW); 
+    
+    // --- ZMIANA 1: Spróbuj INITR_MINI160x80_PLUGIN ---
+    // Czasami ten wariant lepiej ustawia kolory
+    tfts[i]->initR(INITR_MINI160x80); 
+    
+    // --- ZMIANA 2: WYŁĄCZAMY INWERSJĘ ---
+    // To naprawi problem "Zielony -> Fioletowy" oraz "Czarny -> Biały"
+    tfts[i]->invertDisplay(false); 
+    // ------------------------------------
+
+    tfts[i]->setRotation(3);
+    tfts[i]->fillScreen(ST7735_BLACK);
+    
+    // Test kolorów (Napiszemy R, G, B żebyś widział co jest co)
+    tfts[i]->setTextSize(1);
+    tfts[i]->setCursor(5, 10);
+    tfts[i]->setTextColor(ST7735_RED);   tfts[i]->print("R ");
+    tfts[i]->setTextColor(ST7735_GREEN); tfts[i]->print("G ");
+    tfts[i]->setTextColor(ST7735_BLUE);  tfts[i]->print("B");
+    
+    tfts[i]->setCursor(5, 30);
+    tfts[i]->setTextColor(ST7735_WHITE);
+    tfts[i]->print("HYBRID V2");
+    
+    digitalWrite(csPins[i], HIGH);
+  }
+
+  // 4. PRZYCISKI
+  for (int i = 0; i < LICZBA_MODULOW; i++) {
+    pinMode(buttonPins[i], INPUT);
+  }
+
+  // 5. BT
+  BleGamepadConfiguration config;
+  config.setControllerType(CONTROLLER_TYPE_GAMEPAD);
+  bleGamepad.begin(&config);
+}
+
+void loop() {
+  // --- A. ODBIERANIE OBRAZKÓW (USB) ---
+  if (Serial.available()) {
+    uint8_t cmd = Serial.read();
+    
+    if (cmd == 'I') {
+      while(Serial.available() < 1);
+      int screenIdx = Serial.read();
+
+      if (screenIdx >= 0 && screenIdx < LICZBA_MODULOW) {
+        Adafruit_ST7735* tft = tfts[screenIdx];
+        
+        // Izolacja CS
+        digitalWrite(csPins[0], HIGH);
+        digitalWrite(csPins[1], HIGH);
+        digitalWrite(csPins[screenIdx], LOW);
+        
+        tft->startWrite();
+        tft->setAddrWindow(0, 0, 160, 80);
+
+        for (int y = 0; y < 80; y++) {
+          int bytesRead = 0;
+          while(bytesRead < 320) {
+            if(Serial.available()) {
+              lineBuffer[bytesRead++] = Serial.read();
+            }
+          }
+          tft->writePixels((uint16_t*)lineBuffer, 160);
+          Serial.write('K'); // Potwierdzenie
+        }
+        tft->endWrite();
+        digitalWrite(csPins[screenIdx], HIGH);
+      }
+    }
+  }
+
+  // --- B. PRZYCISKI (BLUETOOTH + USB) ---
+  for (int i = 0; i < LICZBA_MODULOW; i++) {
+    bool currentState = digitalRead(buttonPins[i]);
+
+    if (currentState != lastState[i]) {
+      if (currentState == HIGH) {
+        // 1. Wyślij do Bluetooth (Gamepad)
+        if(bleGamepad.isConnected()) bleGamepad.press(i + 1);
+        
+        // 2. Wyślij do USB (Dla aplikacji Python)
+        Serial.print("BTN:");
+        Serial.println(i + 1);
+        
+      } else {
+        if(bleGamepad.isConnected()) bleGamepad.release(i + 1);
+      }
+      lastState[i] = currentState;
+      delay(20); 
+    }
+  }
+}

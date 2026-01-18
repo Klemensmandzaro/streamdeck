@@ -1,0 +1,24 @@
+#include <Arduino.h>
+#include <BleGamepad.h>
+
+BleGamepad bleGamepad("StreamDeck essa","ja",100);
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(7,INPUT);
+  bleGamepad.begin();
+  Serial.println("Started");
+}
+
+void loop() {
+  if (bleGamepad.isConnected()){
+    if (digitalRead(7) == HIGH){
+      bleGamepad.press(BUTTON_1);
+      Serial.println("Pressed");
+      delay(100);
+    } else {
+      bleGamepad.release(BUTTON_1);
+    }
+  }
+}
+

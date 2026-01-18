@@ -1,0 +1,233 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <AnimatedGIF.h>
+#include <LittleFS.h>
+
+// --- PINY ---
+#define TFT_BLK   48
+#define TFT_SDA   45
+#define TFT_SCL   39
+#define TFT_DC    37
+#define TFT_RST   40
+
+// Przyciski
+#define SWITCH_PIN   9
+#define SWITCH_PIN_2 7
+#define SWITCH_PIN_3 5
+#define SWITCH_PIN_4 35
+#define SWITCH_PIN_5 41
+#define SWITCH_PIN_6 2
+
+// Chip Select (CS)
+#define TFT_CS    38
+#define TFT_CS_2  42  
+#define TFT_CS_3  4
+#define TFT_CS_4  18
+#define TFT_CS_5  8
+#define TFT_CS_6  11
+
+// Obiekty
+Adafruit_ST7735* tft[6];
+int ekrany[6] = {TFT_CS, TFT_CS_2, TFT_CS_3, TFT_CS_4, TFT_CS_5, TFT_CS_6};
+int klawisze[6] = {SWITCH_PIN, SWITCH_PIN_2, SWITCH_PIN_3, SWITCH_PIN_4, SWITCH_PIN_5, SWITCH_PIN_6};
+
+AnimatedGIF gif;
+int aktualnyEkranDoGifa = 0;
+
+// --- ZMIENNE DO OBSŁUGI NON-BLOCKING ---
+uint8_t *gifBuffer = NULL; // Wskaźnik na pamięć GIFa
+bool czyOdtwarza = false;  // Flaga stanu
+
+// ==========================================
+// --- FUNKCJA RYSOWANIA (CALLBACK) ---
+// ==========================================
+void GIFDraw(GIFDRAW *pDraw) {
+  uint8_t *s;
+  uint16_t *d, *usPalette, usTemp[320];
+  int x, y, iWidth;
+
+  iWidth = pDraw->iWidth;
+  if (iWidth > 160) iWidth = 160;
+
+  usPalette = pDraw->pPalette;
+  y = pDraw->iY + pDraw->y;
+  
+  s = pDraw->pPixels;
+  if (pDraw->ucDisposalMethod == 2) {
+    for (x = 0; x < iWidth; x++) {
+      if (s[x] == pDraw->ucTransparent) s[x] = pDraw->ucBackground;
+    }
+    pDraw->ucHasTransparency = 0;
+  }
+
+  if (pDraw->ucHasTransparency) {
+    uint8_t *pEnd, c, ucTransparent = pDraw->ucTransparent;
+    int iOffset = 0;
+    pEnd = s + iWidth;
+    while (s < pEnd) {
+      c = *s++;
+      if (c == ucTransparent) {
+        s--;
+        d = usTemp;
+        while (s < pEnd && *s == ucTransparent) { s++; iOffset++; }
+      } else {
+        d = usTemp;
+        while (s < pEnd && *s != ucTransparent) { *d++ = usPalette[*s++]; }
+        tft[aktualnyEkranDoGifa]->drawRGBBitmap(pDraw->iX + iOffset, y, usTemp, (d - usTemp), 1);
+        iOffset += (d - usTemp);
+      }
+    }
+  } else {
+    s = pDraw->pPixels;
+    for (x = 0; x < iWidth; x++) {
+      usTemp[x] = usPalette[*s++];
+    }
+    tft[aktualnyEkranDoGifa]->drawRGBBitmap(pDraw->iX, y, usTemp, iWidth, 1);
+  }
+}
+
+// ==========================================
+// --- FUNKCJE POMOCNICZE (ZARZĄDZANIE PAMIĘCIĄ) ---
+// ==========================================
+
+// Bezpieczne zatrzymanie i zwolnienie pamięci
+void zatrzymajGif() {
+  if (czyOdtwarza) {
+    gif.close();
+    czyOdtwarza = false;
+  }
+  
+  if (gifBuffer != NULL) {
+    free(gifBuffer);
+    gifBuffer = NULL;
+    Serial.println("GIF zatrzymany, pamięć zwolniona.");
+  }
+}
+
+// Rozpoczęcie odtwarzania (tylko wczytanie, bez pętli while!)
+void startGif(int numerEkranu, const char* nazwaPliku) {
+  // 1. Jeśli coś już gra, zatrzymaj to najpierw
+  zatrzymajGif();
+
+  aktualnyEkranDoGifa = numerEkranu;
+  
+  File f = LittleFS.open(nazwaPliku, "r");
+  if (!f) {
+    Serial.print("Błąd: Nie znaleziono pliku "); Serial.println(nazwaPliku);
+    return;
+  }
+
+  size_t rozmiarPliku = f.size();
+  if (rozmiarPliku > 150000) {
+      Serial.println("Błąd: Plik za duży!");
+      f.close();
+      return;
+  }
+
+  // Alokacja pamięci
+  gifBuffer = (uint8_t*)malloc(rozmiarPliku);
+  if (gifBuffer == NULL) {
+    Serial.println("Błąd: Brak RAM!");
+    f.close();
+    return;
+  }
+
+  f.read(gifBuffer, rozmiarPliku);
+  f.close();
+
+  // Inicjalizacja GIF
+  if (gif.open(gifBuffer, rozmiarPliku, GIFDraw)) {
+    Serial.print("Start odtwarzania na ekranie: "); Serial.println(numerEkranu);
+    czyOdtwarza = true;
+  } else {
+    Serial.println("Błąd dekodowania GIF!");
+    free(gifBuffer);
+    gifBuffer = NULL;
+  }
+}
+
+// Funkcja wywoływana w pętli loop() - renderuje jedną klatkę
+void obslugaGifa() {
+  if (czyOdtwarza) {
+    // playFrame(false, NULL) -> false oznacza "nie zapętlaj w nieskończoność wewnątrz funkcji",
+    // ale AnimatedGIF i tak zwraca 1 dopóki są klatki, a 0 gdy koniec.
+    // Przekazujemy NULL jako delay callback, bo nie chcemy delay() w środku.
+    
+    int wynik = gif.playFrame(false, NULL);
+    
+    if (wynik == 0) {
+      // Koniec GIFa (jeśli GIF nie jest zapętlony w pliku)
+      // Jeśli chcesz, żeby GIF grał w kółko, musisz dodać obsługę zapętlenia tutaj,
+      // ale biblioteka AnimatedGIF zazwyczaj sama obsługuje loop count z pliku GIF.
+      // Jeśli wynik == 0, to znaczy że odtwarzanie definitywnie się skończyło.
+      zatrzymajGif();
+    }
+  }
+}
+
+// ==========================================
+// --- SETUP ---
+// ==========================================
+void setup() {
+  Serial.begin(9600);
+  
+  if (!LittleFS.begin(false)) {
+    if(!LittleFS.begin(true)) Serial.println("Błąd LittleFS!");
+  }
+
+  SPI.begin(TFT_SCL, -1, TFT_SDA, -1);
+  
+  pinMode(TFT_BLK, OUTPUT); digitalWrite(TFT_BLK, HIGH);
+  pinMode(TFT_RST, OUTPUT); digitalWrite(TFT_RST, HIGH); delay(50);
+  digitalWrite(TFT_RST, LOW); delay(50); digitalWrite(TFT_RST, HIGH); delay(150);
+  
+  for (int i = 0; i < 6; i++) {
+    pinMode(ekrany[i], OUTPUT);
+    digitalWrite(ekrany[i], HIGH);
+    
+    tft[i] = new Adafruit_ST7735(ekrany[i], TFT_DC, -1);
+    tft[i]->initR(INITR_MINI160x80);
+    tft[i]->setRotation(3);
+    if (i > 2) tft[i]->setRotation(1);
+    tft[i]->fillScreen(ST77XX_BLACK);
+  }
+
+  for (int i = 0; i < 6; i++) pinMode(klawisze[i], INPUT_PULLUP);
+
+  gif.begin(GIF_PALETTE_RGB565_LE);
+  Serial.println("Gotowe!");
+}
+
+// ==========================================
+// --- LOOP ---
+// ==========================================
+void loop() {
+  // 1. Sprawdzanie przycisków
+  // Używamy prostego mechanizmu debounce, żeby nie reagować na drgania styków
+  // ale bez delay(200), który blokowałby animację.
+  
+  static unsigned long ostatniCzasPrzycisku = 0;
+  unsigned long teraz = millis();
+
+  if (teraz - ostatniCzasPrzycisku > 200) { // Minimalny odstęp między kliknięciami
+    
+    if (digitalRead(SWITCH_PIN) == LOW) {
+      startGif(0, "/1.gif");
+      ostatniCzasPrzycisku = teraz;
+    }
+    else if (digitalRead(SWITCH_PIN_2) == LOW) {
+      startGif(1, "/2.gif");
+      ostatniCzasPrzycisku = teraz;
+    }
+    // Tutaj dopisz pozostałe przyciski (3, 4, 5, 6)...
+  }
+
+  // 2. Obsługa GIFa (rysowanie jednej klatki, jeśli jest aktywny)
+  obslugaGifa();
+  
+  // Mały delay dla stabilności (opcjonalny, w ESP32 yield() jest robiony automatycznie w loop)
+  // delay(1); 
+}

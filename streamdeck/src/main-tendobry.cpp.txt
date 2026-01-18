@@ -1,0 +1,194 @@
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <BleGamepad.h>
+
+// --- PINY ---
+#define TFT_DC    9
+#define TFT_RST   10
+#define TFT_MOSI  11
+#define TFT_SCLK  12
+
+const int csPins[] = {41, 42};
+const int buttonPins[] = {7, 15};
+const int LICZBA_MODULOW = 2;
+
+// --- OBIEKTY ---
+Adafruit_ST7735* tfts[LICZBA_MODULOW];
+BleGamepad bleGamepad("StreamDeck Pro", "Ty", 100);
+
+// --- FREERTOS ZMIENNE ---
+SemaphoreHandle_t serialMutex; // "Klucz" do portu Serial
+TaskHandle_t taskDisplayHandle;
+TaskHandle_t taskInputHandle;
+
+uint8_t lineBuffer[320]; 
+
+// ==========================================
+// ZADANIE 1: OBSŁUGA EKRANÓW (Wolne, ciężkie)
+// ==========================================
+void taskDisplay(void * parameter) {
+  for(;;) { // Nieskończona pętla zamiast void loop()
+    
+    // Sprawdzamy czy są dane, ale NIEBLOKUJĄCO
+    if (Serial.available()) {
+      uint8_t cmd = Serial.read();
+      
+      if (cmd == 'I') {
+        // Czekamy na bajt ekranu (krótki timeout)
+        unsigned long startWait = millis();
+        while(Serial.available() < 1 && millis() - startWait < 100) vTaskDelay(1);
+        
+        if (Serial.available()) {
+          int screenIdx = Serial.read();
+
+          if (screenIdx >= 0 && screenIdx < LICZBA_MODULOW) {
+            Adafruit_ST7735* tft = tfts[screenIdx];
+            
+            // Izolacja CS
+            digitalWrite(csPins[0], HIGH);
+            digitalWrite(csPins[1], HIGH);
+            digitalWrite(csPins[screenIdx], LOW);
+            
+            tft->startWrite();
+            tft->setAddrWindow(0, 0, 160, 80);
+
+            for (int y = 0; y < 80; y++) {
+              int bytesRead = 0;
+              // Pętla pobierania linii
+              while(bytesRead < 320) {
+                if(Serial.available()) {
+                  lineBuffer[bytesRead++] = Serial.read();
+                } else {
+                  // Ważne: oddajemy czas procesora, żeby przyciski mogły działać!
+                  vTaskDelay(1); 
+                }
+              }
+              tft->writePixels((uint16_t*)lineBuffer, 160);
+              
+              // --- BEZPIECZNE WYSŁANIE 'K' ---
+              if(xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
+                Serial.write('K');
+                xSemaphoreGive(serialMutex); // Oddajemy klucz
+              }
+            }
+            tft->endWrite();
+            digitalWrite(csPins[screenIdx], HIGH);
+          }
+        }
+      }
+    }
+    
+    // Jeśli nic nie robimy, śpimy 10ms żeby nie grzać procesora
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
+// ==========================================
+// ZADANIE 2: PRZYCISKI I BLUETOOTH (Szybkie)
+// ==========================================
+void taskInput(void * parameter) {
+  bool lastState[LICZBA_MODULOW] = {LOW, LOW};
+  
+  for(;;) {
+    for (int i = 0; i < LICZBA_MODULOW; i++) {
+      bool currentState = digitalRead(buttonPins[i]);
+
+      if (currentState != lastState[i]) {
+        if (currentState == HIGH) {
+          // 1. Bluetooth (Bezpieczne, bo ma własną kolejkę)
+          if(bleGamepad.isConnected()) bleGamepad.press(i + 1);
+          
+          // 2. USB (Wymaga Mutexu!)
+          if(xSemaphoreTake(serialMutex, 10) == pdTRUE) { // Czekamy max 10 ticków na klucz
+            Serial.print("BTN:");
+            Serial.println(i + 1);
+            xSemaphoreGive(serialMutex);
+          }
+          
+        } else {
+          if(bleGamepad.isConnected()) bleGamepad.release(i + 1);
+        }
+        lastState[i] = currentState;
+      }
+    }
+    // Sprawdzamy przyciski co 20ms (Debounce sprzętowy przez opóźnienie)
+    vTaskDelay(20 / portTICK_PERIOD_MS);
+  }
+}
+
+// ==========================================
+// SETUP
+// ==========================================
+void setup() {
+  // Tworzymy Mutex
+  serialMutex = xSemaphoreCreateMutex();
+
+  Serial.begin(115200);
+
+  // Inicjalizacja Pniów CS
+  for(int i=0; i<LICZBA_MODULOW; i++) {
+    pinMode(csPins[i], OUTPUT);
+    digitalWrite(csPins[i], HIGH); 
+  }
+
+  // Reset TFT
+  pinMode(TFT_RST, OUTPUT);
+  digitalWrite(TFT_RST, HIGH); delay(50);
+  digitalWrite(TFT_RST, LOW);  delay(50);
+  digitalWrite(TFT_RST, HIGH); delay(150);
+
+  // Inicjalizacja Ekrany
+  for (int i = 0; i < LICZBA_MODULOW; i++) {
+    tfts[i] = new Adafruit_ST7735(-1, TFT_DC, TFT_MOSI, TFT_SCLK, -1);
+    digitalWrite(csPins[i], LOW);
+    tfts[i]->initR(INITR_MINI160x80); 
+    tfts[i]->invertDisplay(false);
+    tfts[i]->setRotation(3);
+    tfts[i]->fillScreen(ST7735_BLACK);
+    tfts[i]->setTextColor(ST7735_GREEN);
+    tfts[i]->setCursor(10, 30);
+    tfts[i]->print("FreeRTOS ON");
+    digitalWrite(csPins[i], HIGH);
+  }
+
+  // Piny przycisków
+  for (int i = 0; i < LICZBA_MODULOW; i++) {
+    pinMode(buttonPins[i], INPUT);
+  }
+
+  // Bluetooth
+  BleGamepadConfiguration config;
+  config.setControllerType(CONTROLLER_TYPE_GAMEPAD);
+  bleGamepad.begin(&config);
+
+  // --- URUCHAMIANIE ZADAŃ ---
+  
+  // Zadanie Graficzne (Na rdzeniu 1, priorytet 1 - Niski)
+  xTaskCreatePinnedToCore(
+    taskDisplay,    // Funkcja
+    "DisplayTask",  // Nazwa
+    4096,           // Rozmiar stosu (RAM)
+    NULL,           // Parametry
+    1,              // Priorytet (1 = Niski)
+    &taskDisplayHandle, // Uchwyt
+    1               // Rdzeń (Core 1 - App Core)
+  );
+
+  // Zadanie Przycisków (Na rdzeniu 1, priorytet 2 - Wyższy!)
+  // Dzięki wyższemu priorytetowi, przyciski przerwą rysowanie obrazka!
+  xTaskCreatePinnedToCore(
+    taskInput,
+    "InputTask",
+    2048,
+    NULL,
+    2,              // Priorytet (2 = Wyższy)
+    &taskInputHandle,
+    1
+  );
+}
+
+// Pusta pętla loop - wszystko robią zadania
+void loop() {
+  vTaskDelete(NULL); // Usuwamy zadanie Arduino Loop, żeby nie zajmowało pamięci
+}
