@@ -57,7 +57,11 @@ struct GifRequest {
   const char* filename;
 };
 
-// poniższy kod wygenerowany ponieważ o chuj tu chodzi nie wiem
+// chińskie gówno więc kolor czerwony trzeba zamienić z niebieskim
+uint16_t swapColor(uint16_t c) {
+  return (c << 11) | (c & 0x07E0) | (c >> 11);
+}
+
 void GIFDraw(GIFDRAW *pDraw) {
   uint8_t *s;
   uint16_t *d, *usPalette, usTemp[320];
@@ -89,7 +93,11 @@ void GIFDraw(GIFDRAW *pDraw) {
         while (s < pEnd && *s == ucTransparent) { s++; iOffset++; }
       } else {
         d = usTemp;
-        while (s < pEnd && *s != ucTransparent) { *d++ = usPalette[*s++]; }
+        while (s < pEnd && *s != ucTransparent) {
+            // TUTAJ ZMIANA: Pobieramy kolor i zamieniamy R z B
+            uint16_t originalColor = usPalette[*s++];
+            *d++ = swapColor(originalColor); 
+        }
         tft[aktualnyEkranDoGifa]->drawRGBBitmap(pDraw->iX + iOffset, y, usTemp, (d - usTemp), 1);
         iOffset += (d - usTemp);
       }
@@ -97,7 +105,9 @@ void GIFDraw(GIFDRAW *pDraw) {
   } else {
     s = pDraw->pPixels;
     for (x = 0; x < iWidth; x++) {
-      usTemp[x] = usPalette[*s++];
+      // TUTAJ ZMIANA: To samo dla wersji bez przezroczystości
+      uint16_t originalColor = usPalette[*s++];
+      usTemp[x] = swapColor(originalColor);
     }
     tft[aktualnyEkranDoGifa]->drawRGBBitmap(pDraw->iX, y, usTemp, iWidth, 1);
   }
