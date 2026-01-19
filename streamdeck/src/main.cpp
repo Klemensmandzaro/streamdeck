@@ -5,30 +5,24 @@
 #include <Adafruit_ST7735.h>
 #include <AnimatedGIF.h>
 #include <LittleFS.h>
-#include <BleGamepad.h> // <--- NOWA BIBLIOTEKA
-
-// Biblioteki FreeRTOS
+#include <BleGamepad.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/timers.h"
 
-// --- PINY ---
+
 #define TFT_BLK   48
 #define TFT_SDA   45
 #define TFT_SCL   39
 #define TFT_DC    37
 #define TFT_RST   40
-
-// Przyciski
 #define SWITCH_PIN_6   9
 #define SWITCH_PIN_5 7
 #define SWITCH_PIN_4 5
 #define SWITCH_PIN 35
 #define SWITCH_PIN_2 41
 #define SWITCH_PIN_3 2
-
-// Chip Select (CS) dla każdego ekranu
 #define TFT_CS    38
 #define TFT_CS_2  42  
 #define TFT_CS_3  4
@@ -36,18 +30,16 @@
 #define TFT_CS_5  8
 #define TFT_CS_6  11
 
-// Tablice konfiguracyjne
+
 Adafruit_ST7735* tft[6];
 int ekrany[6] = {TFT_CS, TFT_CS_2, TFT_CS_3, TFT_CS_4, TFT_CS_5, TFT_CS_6};
 int klawisze[6] = {SWITCH_PIN, SWITCH_PIN_2, SWITCH_PIN_3, SWITCH_PIN_4, SWITCH_PIN_5, SWITCH_PIN_6};
 
-// Nazwy plików przypisane do indeksów
+
 const char* nazwyPlikow[6] = {
   "/1.gif", "/2.gif", "/3.gif", "/4.gif", "/5.gif", "/6.gif"
 };
 
-// Mapowanie przycisków fizycznych na przyciski Gamepada
-// BUTTON_1 to zazwyczaj "A" lub "Krzyżyk", BUTTON_2 to "B" itd.
 const uint16_t przyciskiGamepada[6] = {
   BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4, BUTTON_5, BUTTON_6
 };
@@ -55,10 +47,8 @@ const uint16_t przyciskiGamepada[6] = {
 AnimatedGIF gif;
 int aktualnyEkranDoGifa = 0;
 
-// --- OBIEKT GAMEPADA ---
-BleGamepad bleGamepad("ESP32 StreamDeck", "DIY Electronics", 100);
+BleGamepad bleGamepad("esp moje zycie", "Kajmanek", 100);
 
-// --- ZMIENNE FREERTOS ---
 QueueHandle_t gifQueue;       
 TimerHandle_t buttonTimers[6]; 
 
@@ -67,9 +57,7 @@ struct GifRequest {
   const char* filename;
 };
 
-// ==========================================
-// --- FUNKCJA RYSOWANIA (CALLBACK) ---
-// ==========================================
+// poniższy kod wygenerowany ponieważ o chuj tu chodzi nie wiem
 void GIFDraw(GIFDRAW *pDraw) {
   uint8_t *s;
   uint16_t *d, *usPalette, usTemp[320];
@@ -115,9 +103,7 @@ void GIFDraw(GIFDRAW *pDraw) {
   }
 }
 
-// ==========================================
-// --- FUNKCJA ODTWARZANIA ---
-// ==========================================
+
 void wykonajOdtwarzanie(int numerEkranu, const char* nazwaPliku) {
   aktualnyEkranDoGifa = numerEkranu;
   
@@ -149,9 +135,7 @@ void wykonajOdtwarzanie(int numerEkranu, const char* nazwaPliku) {
   free(gifBuffer);
 }
 
-// ==========================================
-// --- TIMER CALLBACK ---
-// ==========================================
+
 void onTimerCallback(TimerHandle_t xTimer) {
   int id = (int)pvTimerGetTimerID(xTimer);
   
@@ -162,9 +146,7 @@ void onTimerCallback(TimerHandle_t xTimer) {
   xQueueSend(gifQueue, &req, 0);
 }
 
-// ==========================================
-// --- TASK: WYŚWIETLANIE ---
-// ==========================================
+// zajebiscie bo jest tak i kolejka
 void taskDisplay(void *parameter) {
   GifRequest receivedReq;
   for(;;) {
@@ -174,59 +156,49 @@ void taskDisplay(void *parameter) {
   }
 }
 
-// ==========================================
-// --- TASK: PRZYCISKI I BLE ---
-// ==========================================
+// kolejny świetny task
 void taskButtons(void *parameter) {
   bool lastState[6]; 
   for(int i=0; i<6; i++) lastState[i] = HIGH; 
 
-  for(;;) {
-    bool isConnected = bleGamepad.isConnected(); // Sprawdzamy status BLE
+  for(;;) 
+  {
+    bool isConnected = bleGamepad.isConnected();
 
     for (int i = 0; i < 6; i++) {
+
       int currentState = digitalRead(klawisze[i]);
 
-      // Sprawdzenie zmiany stanu (INPUT_PULLUP: LOW = wciśnięty)
+      
       if (currentState != lastState[i]) {
         
-        // 1. ZBOCZE OPADAJĄCE (Wciśnięcie)
-        if (currentState == LOW) {
+        
+        if (currentState == LOW) 
+        {
           Serial.printf("Przycisk %d wciśnięty\n", i);
-          
-          // A. Logika GIF (Timer 500ms)
           xTimerReset(buttonTimers[i], 0); 
 
-          // B. Logika BLE Gamepad
           if (isConnected) {
             bleGamepad.press(przyciskiGamepada[i]);
-            // Opcjonalnie: wyślij raport od razu, chociaż biblioteka robi to automatycznie przy następnym loopie
-            // bleGamepad.sendReport(); 
           }
         }
-        
-        // 2. ZBOCZE NARASTAJĄCE (Puszczenie)
-        else if (currentState == HIGH) {
-           // B. Logika BLE Gamepad - puszczenie przycisku
+        else if (currentState == HIGH) 
+        {
            if (isConnected) {
              bleGamepad.release(przyciskiGamepada[i]);
            }
         }
 
-        // Aktualizacja stanu
+        
         lastState[i] = currentState;
       }
     }
     
-    // Krótki delay dla debouncingu i oddania czasu CPU
-    // 15ms jest dobrym kompromisem między responsywnością pada a stabilnością styków
     vTaskDelay(pdMS_TO_TICKS(15)); 
   }
 }
 
-// ==========================================
-// --- SETUP ---
-// ==========================================
+
 void setup() {
   Serial.begin(9600);
   
@@ -234,7 +206,7 @@ void setup() {
     if(!LittleFS.begin(true)) return;
   }
 
-  // SPI i Ekrany
+  
   SPI.begin(TFT_SCL, -1, TFT_SDA, -1);
   pinMode(TFT_BLK, OUTPUT); digitalWrite(TFT_BLK, HIGH);
   pinMode(TFT_RST, OUTPUT); digitalWrite(TFT_RST, HIGH); delay(50);
@@ -257,22 +229,20 @@ void setup() {
 
   gif.begin(GIF_PALETTE_RGB565_LE);
 
-  // --- START BLE ---
-  Serial.println("Startowanie Bluetooth...");
-  // Ustawienie: Auto-raportowanie przycisków włączone
-  //bleGamepad.setAutoReport(true); 
+ 
+  Serial.println("ble jajco 123");
   bleGamepad.begin();
 
-  // --- START FREERTOS ---
+  
   gifQueue = xQueueCreate(5, sizeof(GifRequest));
 
   for (int i = 0; i < 6; i++) {
     buttonTimers[i] = xTimerCreate("BtnTimer", pdMS_TO_TICKS(500), pdFALSE, (void*)i, onTimerCallback);
   }
 
-  // Zwiększony nieco stos dla taskDisplay na wszelki wypadek
+  
   xTaskCreate(taskDisplay, "DisplayTask", 8192, NULL, 2, NULL);
-  xTaskCreate(taskButtons, "BtnTask", 4096, NULL, 1, NULL); // Zwiększony stos bo BLE wymaga pamięci
+  xTaskCreate(taskButtons, "BtnTask", 4096, NULL, 1, NULL);
 
   Serial.println("System gotowy.");
 }
